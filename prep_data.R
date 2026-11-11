@@ -2,9 +2,10 @@
 # Processes data, before launching Shiny app.R file.
 #   1. read in the Census 2022 Small Area boundaries (Tailte Éireann / CSO),
 #   2. join total population from the Census 2022 SAPS small-area CSV,
-#   3. simplify the geometry with mapshaper (shared borders stay aligned),
+#   3. simplify the Small Area geometry with mapshaper (shared borders stay aligned),
 #   4. split multi-part areas into single polygons, as leafgl requires,
 #   5. save the result to data/small_areas.rds for the Shiny app.
+#   6. save the result to data/small_areas.geojson for use in other settings.
 #
 # Inputs (download and place in data/raw/):
 #   - "Small Areas National Statistical Boundaries 2022" (could also use ED boundaries)
@@ -19,9 +20,10 @@ library(rmapshaper)
 boundary_path <- "data/SMALL_AREA_2022_Genralised_20m_view_7288946736364367594.geojson"   # .geojson / .gpkg / .shp
 boundary_layer <- NULL  # only needed if the file has several layers (see st_layers())
 saps_path     <- "data/SAPS_2022_Small_Area_UR_171024.csv"
-out_path      <- "data/small_areas.rds"
+out_path_rds      <- "data/small_areas.rds"
+out_path_geojson      <- "data/small_areas.geojson"
 keep_prop     <- 0.25   # share of vertices to keep (1 = no simplification);
-# try ~0.05-0.1 with the ungeneralised boundaries
+
 
 # Return the first column name in `df` matching one of `candidates`
 # (case-insensitive). Shapefiles truncate names to 10 characters, so the
@@ -164,8 +166,10 @@ st_geometry(sa) <- st_sfc(
 )
 check_step(sa, "Transform to WGS84")
 
-# --- 5. Save ----------------------------------------------------------------
-dir.create(dirname(out_path), showWarnings = FALSE, recursive = TRUE)
-saveRDS(sa, out_path)
-message("Saved ", length(unique(sa$sa_id)), " small areas (",
-        nrow(sa), " polygons) to ", out_path)
+# --- 5. Save to rds------------------------------------------------------------
+dir.create(dirname(out_path_rds), showWarnings = FALSE, recursive = TRUE)
+saveRDS(sa, out_path_rds)
+
+# --- 6. Save to geojson--------------------------------------------------------
+sa_out <- st_transform(sa, 4326)   # GeoJSON expects WGS84 lon/lat
+st_write(sa_out, out_path_geojson, driver = "GeoJSON", delete_dsn = TRUE)

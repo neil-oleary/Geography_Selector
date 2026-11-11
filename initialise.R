@@ -1,3 +1,4 @@
-install.packages(c("shiny", "leaflet", "sf", "readr", "htmltools"))
-source("prep_data.R")      # once
+install.packages(c("shiny", "leaflet", "sf", "dplyr", 
+                   "readr", "leafgl", "rmapshaper", "htmltools"))
+source("prep_data.R")
 shiny::runApp()  
