@@ -5,10 +5,10 @@
 
 library(shiny)
 library(dplyr)
+library(readr)
 library(leaflet)
 library(leafgl)
 library(sf)
-library(htmltools)
 
 sa_path <- "data/small_areas.rds" # location of processed geography data
 responses_path <- "responses/submissions.csv"   # placeholder for prototype, there is no back-end connection with database
@@ -18,16 +18,6 @@ if (!file.exists(sa_path)) {
   stop("data/small_areas.rds not found. Run prep_data.R first.", call. = FALSE)
 }
 sa <- readRDS(sa_path)
-sa <- sa[!st_is_empty(sa), ]
-if (nrow(sa) == 0) {
-  stop("data/small_areas.rds contains no small areas. ",
-       "Rerun prep_data.R and check the counts it reports at each step.",
-       call. = FALSE)
-}
-if (!inherits(st_geometry(sa), "sfc_POLYGON")) {
-  stop("small_areas.rds has multi-part geometry. Rerun the updated prep_data.R.",
-       call. = FALSE)
-}
 dir.create(dirname(responses_path), showWarnings = FALSE, recursive = TRUE)
 
 # --- Helpers ----------------------------------------------------------------
@@ -38,23 +28,17 @@ fmt_pop <- function(x) {
 area_details <- function(row) {
   tags$table(class = "sa-table",
              tags$tr(tags$th("Small area code"), tags$td(row$sa_code)),
-             if (!is.na(row$ed))     tags$tr(tags$th("Electoral division"), tags$td(row$ed)),
-             if (!is.na(row$county)) tags$tr(tags$th("County"), tags$td(row$county)),
+             tags$tr(tags$th("Electoral division"), tags$td(row$ed)),
+             tags$tr(tags$th("County"), tags$td(row$county)),
              tags$tr(tags$th("Population (Census 2022)"), tags$td(fmt_pop(row$population))))
 }
 
 # Desktop only: on phones the panel below the map shows these details instead
-popup_html <- function(row) {
-  as.character(tagList(tags$strong("Is this where you live?"),
-                       area_details(row),
-                       tags$p(class = "popup-hint", "If so, press Submit to confirm.")))
-}
 
 # --- Base map, built once and shared by every session -------------------------
 # All small areas are drawn with WebGL (leafgl), which handles ~19,000
 # polygons far faster than leaflet's standard SVG/canvas renderer.
-base_map <- leaflet(options = leafletOptions(preferCanvas = TRUE, minZoom = 6,
-                                             zoomControl = FALSE)) |>
+base_map <- leaflet(options = leafletOptions(minZoom = 6, zoomControl = FALSE)) |>
   addProviderTiles(providers$Esri.WorldGrayCanvas, group = "Light",
                    options = providerTileOptions(maxNativeZoom = 16, maxZoom = 19)) |>
   addProviderTiles(providers$OpenStreetMap, group = "Streets") |>
@@ -69,36 +53,20 @@ base_map <- leaflet(options = leafletOptions(preferCanvas = TRUE, minZoom = 6,
                 label = ~paste("Small area", sa_code)) |>
   fitBounds(-10.7, 51.4, -5.9, 55.45) |>
   setMaxBounds(-12.5, 50.5, -4.5, 56.5) |>
-  addLayersControl(
-    baseGroups = c("Streets", "Light"),
-    overlayGroups = "Small areas",
-    options = layersControlOptions(collapsed = TRUE)
-  ) |>
+  addLayersControl(baseGroups = c("Streets", "Light"),
+                   overlayGroups = "Small areas",
+                   options = layersControlOptions(collapsed = TRUE)) |>
   htmlwidgets::onRender("
     function(el, x) {
       var map = this;
       // Zoom buttons bottom-right, clear of the search box
       L.control.zoom({ position: 'bottomright' }).addTo(map);
       // Keep the map sized correctly when the panel next to it changes height
-      if (window.ResizeObserver) {
-        new ResizeObserver(function() { map.invalidateSize(); }).observe(el);
-      }
+      new ResizeObserver(function() { map.invalidateSize(); }).observe(el);
     }
   ")
 
 # --- Lookups for clicks, in plain R -----------------------------------------
-sa_info <- st_drop_geometry(sa)
-sa_info <- sa_info[!duplicated(sa_info$sa_id), ]
-rownames(sa_info) <- sa_info$sa_id
-
-polys <- unclass(st_geometry(sa))
-sa_shapes <- lapply(split(seq_along(polys), sa$sa_id), 
-                    function(i) {
-                      structure(lapply(polys[i], unclass), class = c("XY", "MULTIPOLYGON", "sfg"))
-                    })
-
-rm(sa, polys)
-invisible(gc())
 
 # --- Address search -----------------------------------------------------------
 # Runs entirely in the browser: the typed address goes straight to
@@ -185,10 +153,6 @@ document.addEventListener('DOMContentLoaded', function() {
   document.addEventListener('pointerdown', function(e) {
     if (!form.contains(e.target)) hideResults();
   });
-
-  Shiny.addCustomMessageHandler('submit-enabled', function(on) {
-    document.getElementById('submit').disabled = !on;
-  });
 });
 "
 
@@ -260,11 +224,10 @@ body { color: var(--ink); }
 .addr-results button:hover { background: var(--panel); }
 .addr-results .credit { font-size: 11px; color: var(--muted); padding: 6px 12px; }
 
-.popup-hint { color: var(--muted); margin: 4px 0 0; font-size: 12px; }
 .leaflet-touch .leaflet-bar a { width: 40px; height: 40px; line-height: 40px; }
 
 @media (max-width: 767px) {
-  .leaflet-popup, .leaflet-control-layers { display: none; }
+  .leaflet-control-layers { display: none; }
 }
 @media (min-width: 768px) {
   .app { display: grid; grid-template-columns: 340px 1fr; }
@@ -278,24 +241,22 @@ body { color: var(--ink); }
 "
 
 # --- UI ---------------------------------------------------------------------
-ui <- bootstrapPage(
-  title = "Record your local area",
-  tags$head(tags$meta(name = "viewport",
-                      content = "width=device-width, initial-scale=1, viewport-fit=cover"),
-            tags$style(HTML(app_css)),
-            tags$script(HTML(search_js))),
-  tags$div(class = "app",
-           tags$aside(
-             class = "panel",
-             tags$h1("Which Census small area do you live in?"),
-             uiOutput("selection_info"),
-             tagAppendAttributes(actionButton("submit", "Submit my small area",
-                                              class = "btn-primary", icon = icon("check")),
-                                 disabled = "disabled"),
-             uiOutput("submission_info")),
-           tags$main(class = "map-wrap",
-                     search_box,
-                     leafletOutput("map", height = "100%"))))
+ui <- bootstrapPage(title = "Record your local area",
+                    tags$head(tags$meta(name = "viewport",
+                                        content = "width=device-width, initial-scale=1, viewport-fit=cover"),
+                              tags$style(HTML(app_css)),
+                              tags$script(HTML(search_js))),
+                    tags$div(class = "app",
+                             tags$aside(class = "panel",
+                                        tags$h1("Which Census small area do you live in?"),
+                                        uiOutput("selection_info"),
+                                        actionButton("submit", "Submit my small area",
+                                                     class = "btn-primary", icon = icon("check"),
+                                                     disabled = TRUE),
+                                        uiOutput("submission_info")),
+                             tags$main(class = "map-wrap",
+                                       search_box,
+                                       leafletOutput("map", height = "100%"))))
 
 # --- Server -----------------------------------------------------------------
 server <- function(input, output, session) {
@@ -313,21 +274,18 @@ server <- function(input, output, session) {
     req(click$id)
     
     zoom <- input$map_zoom
-    if (!is.null(zoom) && zoom < min_select_zoom) {
+    if (zoom < min_select_zoom) {
       leafletProxy("map") |>
         flyTo(click$lng, click$lat, zoom = min(zoom + 3, min_select_zoom),
               options = list(duration = 0.6))
       return()
     }
     
-    shape <- sa_shapes[[click$id]]
-    req(!is.null(shape))
-    info <- sa_info[click$id, ]
-    selected(info)
+    shape <- filter(sa, sa_id == click$id)
+    selected(st_drop_geometry(shape) |> slice(1))
     
     leafletProxy("map") |>
       clearGroup("selected") |>
-      clearPopups() |>
       addPolygons(data = shape,
                   group = "selected",
                   color = "#c9502c",
@@ -335,7 +293,7 @@ server <- function(input, output, session) {
                   fillColor = "#c9502c",
                   fillOpacity = 0.30,
                   options = pathOptions(pane = "selected", interactive = FALSE))
-    session$sendCustomMessage("submit-enabled", TRUE)
+    updateActionButton(session, "submit", disabled = FALSE)
   })
   
   output$selection_info <- renderUI({
@@ -358,30 +316,22 @@ server <- function(input, output, session) {
     row <- selected()
     req(row)
     
-    record <- data.frame(session_id = session$token,
-                         submitted_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
-                         sa_code = row$sa_code,
-                         sa_guid = row$sa_guid,
-                         county = row$county,
-                         ed = row$ed,
-                         population = row$population,
-                         stringsAsFactors = FALSE)
-    submitted(record)
+    record <- row |>
+      mutate(session_id = session$token,
+             submitted_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")) |>
+      select(session_id, submitted_at, sa_code, sa_guid, county, ed, population)
+    submitted(row$sa_code)
     
     # Placeholder storage; replace when the back end is in place
-    first_write <- !file.exists(responses_path)
-    write.table(record, responses_path, sep = ",", row.names = FALSE,
-                col.names = first_write, append = !first_write, qmethod = "double")
+    write_csv(record, responses_path, append = file.exists(responses_path))
     
-    leafletProxy("map") |> clearPopups()
-    session$sendCustomMessage("submit-enabled", FALSE)
+    updateActionButton(session, "submit", disabled = TRUE)
   })
   
   output$submission_info <- renderUI({
-    rec <- submitted()
-    if (is.null(rec)) return(NULL)
+    req(submitted())
     p(class = "done", role = "status", icon("circle-check"),
-      sprintf(" Small area %s submitted.", rec$sa_code))
+      sprintf(" Small area %s submitted.", submitted()))
   })
 }
 
